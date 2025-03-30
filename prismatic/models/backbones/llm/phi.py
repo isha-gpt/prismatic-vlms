@@ -43,7 +43,7 @@ class PhiLLMBackbone(HFCausalLLMBackbone):
             llm_backbone_id,
             llm_max_length=llm_max_length,
             hf_token=hf_token,
-            inference_mode=inference_mode,
+            inference_mode=True, #ISHAFIX
             use_flash_attention_2=use_flash_attention_2,
             **PHI_MODELS[llm_backbone_id],
         )

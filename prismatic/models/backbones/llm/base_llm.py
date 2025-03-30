@@ -103,7 +103,7 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
         hf_hub_path: str,
         llm_max_length: int = 2048,
         hf_token: Optional[str] = None,
-        inference_mode: bool = False,
+        inference_mode: bool = True, # ISHA FIX
         use_flash_attention_2: bool = False,
         torch_dtype: torch.dtype = torch.float16,
     ) -> None:
@@ -125,6 +125,7 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
                 do_sample=False,
                 temperature=1.0,
                 top_p=1.0,
+                trust_remote_code=True
             )
 
         # [Contract] `inference_mode` means we're loading from a pretrained checkpoint; no need to load base weights!
@@ -171,6 +172,7 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
             #       this works well with base LLM generation.
             #   =>> Like Llama-2 Tokenizers -- we'll add a special PAD token for training purposes.
             "phi-2-3b",
+            "phi-3-instruct-4b"
         }
         if self.identifier in SPECIAL_CASES:
             return

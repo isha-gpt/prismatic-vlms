@@ -48,16 +48,8 @@ def get_model_description(model_id_or_name: str) -> str:
 def load(
     model_id_or_path: Union[str, Path], hf_token: Optional[str] = None, cache_dir: Optional[Union[str, Path]] = None
 ) -> PrismaticVLM:
-    """Loads a pretrained PrismaticVLM from either local disk or the HuggingFace Hub."""
-    if os.path.isdir(model_id_or_path):
-        overwatch.info(f"Loading from local path `{(run_dir := Path(model_id_or_path))}`")
-
-        # Get paths for `config.json` and pretrained checkpoint
-        config_json, checkpoint_pt = run_dir / "config.json", run_dir / "checkpoints" / "latest-checkpoint.pt"
-        assert config_json.exists(), f"Missing `config.json` for `{run_dir = }`"
-        assert checkpoint_pt.exists(), f"Missing checkpoint for `{run_dir = }`"
-    else:
-        rylan_trained_models = {
+    
+    rylan_trained_models = {
             "prism-gemma-instruct+2b+clip",
             "prism-gemma-instruct+2b+siglip",
             "prism-gemma-instruct+2b+dinosiglip",
@@ -77,7 +69,25 @@ def load(
             "prism-phi-instruct-3+4b+siglip",
             "prism-phi-instruct-3+4b+dinosiglip",
         }
+    
+    """Loads a pretrained PrismaticVLM from either local disk or the HuggingFace Hub."""
+    
+    # ISHA FIX: it never recognized the local mode...
+    
+    # if model_id_or_path in GLOBAL_REGISTRY:
+    #     full_path = "../models--TRI-ML--prismatic-vlms/snapshots/a3ba8a19c453a82eaf5a3fb1e699dd9e441f0a12/" + model_id_or_path
+    # elif model_id_or_path in rylan_trained_models:
+    #     full_path = "../models--RylanSchaeffer--prismatic-vlms/snapshots/60c88dda2e826a3ff569546205e4b51621007e1e/" + model_id_or_path.removeprefix("prism-")
         
+    full_path = model_id_or_path
+    print(full_path)
+    if os.path.isdir(full_path):
+        overwatch.info(f"Loading from local path `{(run_dir := Path(full_path))}`")
+        # Get paths for `config.json` and pretrained checkpoint
+        config_json, checkpoint_pt = run_dir / "config.json", run_dir / "checkpoints" / "latest-checkpoint.pt"
+        assert config_json.exists(), f"Missing `config.json` for `{run_dir = }`"
+        assert checkpoint_pt.exists(), f"Missing checkpoint for `{run_dir = }`"
+    else:
         if (model_id_or_path not in rylan_trained_models) and (model_id_or_path not in GLOBAL_REGISTRY):
             raise ValueError(f"Couldn't find `{model_id_or_path = }; check `prismatic.available_model_names()`")
 
@@ -131,7 +141,7 @@ def load(
         model_cfg["model_id"],
         vision_backbone,
         llm_backbone,
-        arch_specifier=model_cfg["arch_specifier"],
+        arch_specifier=model_cfg["arch_specifier"]
     )
 
-    return vlm
+    return vlm, tokenizer

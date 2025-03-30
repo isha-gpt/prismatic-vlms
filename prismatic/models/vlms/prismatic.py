@@ -264,12 +264,12 @@ class PrismaticVLM(VLM):
         return_dict: Optional[bool] = None,
         multimodal_indices: Optional[torch.LongTensor] = None,
     ) -> CausalLMOutputWithPast:
+    
         """Run a forward pass through the VLM, returning a CausalLMOutputWithPast instance (contains loss)."""
 
         # Handle Inference (leverage cache, short-circuit on just LLM forward)
         if input_ids.shape[1] == 1 and past_key_values is not None:
-            # We're leveraging the cache, so just redirect to `self.llm_backbone` with `input_ids` and `past_key_values`
-            output = self.llm_backbone(
+            return self.llm_backbone(
                 input_ids=input_ids,
                 attention_mask=None,
                 position_ids=None,
@@ -281,17 +281,16 @@ class PrismaticVLM(VLM):
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
-            return output
 
-        elif input_ids.shape[1] == 1 or pixel_values is None:
-            raise RuntimeError("Invalid `forward()` call!")
-
-        # Handle Multimodal Indices is None --> pretend like the batch is fully multimodal (always image + text)!
+        # Ensure multimodal_indices is correctly set
         if multimodal_indices is None:
-            multimodal_indices = torch.arange(len(input_ids), dtype=torch.long, device=input_ids.device)
+            if pixel_values is not None:
+                multimodal_indices = torch.arange(len(input_ids), dtype=torch.long, device=input_ids.device)
+            else:
+                multimodal_indices = torch.tensor([], dtype=torch.long, device=input_ids.device)
 
-        # Handle Multimodal Indices is Empty (len == 0) --> simple unimodal forward
-        elif len(multimodal_indices) == 0:
+        # If there are no multimodal indices, default to unimodal forward
+        if len(multimodal_indices) == 0 or pixel_values is None:
             return self.llm_backbone(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -305,14 +304,14 @@ class PrismaticVLM(VLM):
                 return_dict=return_dict,
             )
 
-        # Run Visual Feature Extraction
-        # with torch.set_grad_enabled(self.vision_backbone_requires_grad):
-        if isinstance(pixel_values, dict):
-            patch_features = self.vision_backbone({k: pixel_values[k][multimodal_indices] for k in pixel_values})
-        else:
-            patch_features = self.vision_backbone(pixel_values[multimodal_indices])
+        # Run Visual Feature Extraction if pixel_values are provided
+        with torch.set_grad_enabled(self.vision_backbone_requires_grad):
+            if isinstance(pixel_values, dict):
+                patch_features = self.vision_backbone({k: pixel_values[k][multimodal_indices] for k in pixel_values})
+            else:
+                patch_features = self.vision_backbone(pixel_values[multimodal_indices])
 
-        # Projection Logic :: [bsz, num_patches, llm_embed_dim] =>> num_patches = (2 *) (256 + 1) for ViT-L + CLS
+        # Projection Logic
         projected_patch_embeddings = self.projector(patch_features)
         projected_patch_attention_mask = None
         if attention_mask is not None:
@@ -323,10 +322,10 @@ class PrismaticVLM(VLM):
                 device=attention_mask.device,
             )
 
-        # Get Input Embeddings from LLM Backbone :: [bsz, input_seq_len, llm_embed_dim]
+        # Get Input Embeddings
         input_embeddings = self.llm_backbone.embed_input_ids(input_ids)
 
-        # Build Multimodal Embeddings (and build resulting attention mask)
+        # Build Multimodal Embeddings
         multimodal_embeddings = torch.cat(
             [
                 input_embeddings[multimodal_indices, :1, :],
@@ -335,6 +334,7 @@ class PrismaticVLM(VLM):
             ],
             dim=1,
         )
+
         multimodal_attention_mask = None
         if attention_mask is not None:
             multimodal_attention_mask = torch.cat(
@@ -346,8 +346,7 @@ class PrismaticVLM(VLM):
                 dim=1,
             )
 
-        # [Contract] We assume the first token of `labels` (associated with <BOS>) is already marked as "IGNORE"
-        #   => We'll ignore the per-token outputs for each of the patch embeddings as well!
+        # Handle Labels
         multimodal_labels = None
         if labels is not None:
             projected_patch_labels = torch.full(
@@ -360,26 +359,18 @@ class PrismaticVLM(VLM):
                 [labels[multimodal_indices, :1], projected_patch_labels, labels[multimodal_indices, 1:]], dim=1
             )
 
-        # === Add Unimodal Handling ===
-
-        # Create Fused Embeddings, Attention Mask, and Labels by Merging with "unimodal" Inputs (if applicable)
+        # Handle Unimodal Inputs
         unimodal_indices = torch.tensor(
             [idx for idx in range(len(input_ids)) if idx not in multimodal_indices],
             dtype=torch.long,
-            device=multimodal_indices.device,
+            device=input_ids.device,
         )
 
-        # No "unimodal" data --> Fused == Multimodal
         if len(unimodal_indices) == 0:
             fused_embeddings = multimodal_embeddings
             fused_attention_mask = multimodal_attention_mask
             fused_labels = multimodal_labels
-
         else:
-            # Otherwise --> Merge w/ unimodal data
-
-            # This doesn't matter --> but in the "normal" case this is the embedding of the <PAD> token
-            #   => NOTE :: Verified that `zeros/randn/empty/<PAD> embedding` all return the same result!
             unimodal_embeddings_pad = torch.zeros(
                 (len(unimodal_indices), projected_patch_embeddings.shape[1], input_embeddings.shape[2]),
                 dtype=input_embeddings.dtype,
@@ -402,12 +393,11 @@ class PrismaticVLM(VLM):
             unimodal_attention_mask = torch.cat([attention_mask[unimodal_indices], unimodal_attention_pad], dim=1)
             unimodal_labels = torch.cat([labels[unimodal_indices], unimodal_labels_pad], dim=1)
 
-            # Create "Fused" Tensors by Stacking Multimodal & Unimodal
             fused_embeddings = torch.vstack([multimodal_embeddings, unimodal_embeddings])
             fused_attention_mask = torch.vstack([multimodal_attention_mask, unimodal_attention_mask])
             fused_labels = torch.vstack([multimodal_labels, unimodal_labels])
 
-        # Run LLM Forward --> returns CausalLMOutputWithPast!
+        # Run LLM Forward
         return self.llm_backbone(
             input_ids=None,
             attention_mask=fused_attention_mask,
@@ -534,27 +524,33 @@ class PrismaticVLM(VLM):
         # For now, only support generation with a batch size of 1 for simplicity
         image_transform, tokenizer = self.vision_backbone.image_transform, self.llm_backbone.tokenizer
 
-        # Prepare Inputs
+        # Prepare Text Inputs
         input_ids = tokenizer(prompt_text, truncation=True, return_tensors="pt").input_ids.to(self.device)
-        pixel_values = image_transform(image)
-        if isinstance(pixel_values, torch.Tensor):
-            pixel_values = pixel_values[None, ...].to(self.device)
-        elif isinstance(pixel_values, dict):
-            pixel_values = {k: v[None, ...].to(self.device) for k, v in pixel_values.items()}
+
+        # Handle Optional Image Input
+        if image is not None:
+            try:
+                pixel_values = image_transform(image)
+                if isinstance(pixel_values, torch.Tensor):
+                    pixel_values = pixel_values[None, ...].to(self.device)
+                elif isinstance(pixel_values, dict):
+                    pixel_values = {k: v[None, ...].to(self.device) for k, v in pixel_values.items()}
+                else:
+                    raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
+            except Exception as e:
+                raise ValueError(f"Error processing image: {e}")
         else:
-            raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
+            pixel_values = None  # Ensure pixel_values is explicitly set
 
         # Invoke super().generate --> taps into `GenerationMixin` which (redirects) to `forward()`
         autocast_dtype = self.llm_backbone.half_precision_dtype
         with torch.autocast("cuda", dtype=autocast_dtype, enabled=self.enable_mixed_precision_training):
-            # fmt: off
             generated_ids = super().generate(
-                input_ids=input_ids,            # Shape: [1, seq]
-                pixel_values=pixel_values,      # Shape: [1, 3, res, res] or Dict[str, Shape[1, 3, res, res]]
+                input_ids=input_ids,            
+                pixel_values=pixel_values,  # This can now safely be None
                 **kwargs
             )
-            # fmt: on
 
-        generated_text = tokenizer.decode(generated_ids[0, input_ids.shape[1] :], skip_special_tokens=True).strip()
+        generated_text = tokenizer.decode(generated_ids[0, input_ids.shape[1]:], skip_special_tokens=True).strip()
 
         return generated_text
