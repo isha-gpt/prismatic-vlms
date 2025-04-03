@@ -131,7 +131,7 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
         # [Contract] `inference_mode` means we're loading from a pretrained checkpoint; no need to load base weights!
         else:
             overwatch.info(f"Building empty [bold]{llm_family}[/] LLM from [underline]`{hf_hub_path}`[/]", ctx_level=1)
-            llm_config = AutoConfig.from_pretrained(hf_hub_path, token=hf_token)
+            llm_config = AutoConfig.from_pretrained(hf_hub_path, token=hf_token, trust_remote_code=True)
             self.llm = llm_cls._from_config(llm_config)
 
         # Lightweight Handling (with extended explanation) for setting some LLM Parameters
@@ -153,6 +153,7 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
             model_max_length=self.llm_max_length,
             token=hf_token,
             padding_side="right",
+            trust_remote_code=True
         )
 
         # Explicitly verify that Tokenizer padding_side is set to right for training!
